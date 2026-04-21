@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     # LLM
     openai_api_key: str
     openai_model: str = "openai/gpt-4o-mini"
+    openai_base_url: str | None = None
 
     # Options: "nl2pln" | "canonical_pln" | "manhin"
     parser: str = "canonical_pln"

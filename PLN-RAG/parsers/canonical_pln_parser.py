@@ -51,7 +51,14 @@ class CanonicalPLNParser(SemanticParser):
         self._module.load(cfg.canonical_pln_nl2pln_module_path)
         self._nl2pln = self._module.nl2pln
 
-        lm = dspy.LM(cfg.openai_model, api_key=cfg.openai_api_key, cache=False)
+        lm_kwargs = {
+            "api_key": cfg.openai_api_key,
+            "cache": False,
+        }
+        if cfg.openai_base_url:
+            lm_kwargs["api_base"] = cfg.openai_base_url
+
+        lm = dspy.LM(cfg.openai_model, **lm_kwargs)
         dspy.configure(lm=lm, temperature=0.1, max_tokens=4000)
 
     def parse(self, text: str, context: List[str]) -> ParseResult:

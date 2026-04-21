@@ -26,7 +26,14 @@ class AnswerGenerator:
 
     def __init__(self):
         cfg = get_settings()
-        lm = dspy.LM(cfg.openai_model, api_key=cfg.openai_api_key, cache=False)
+        lm_kwargs = {
+            "api_key": cfg.openai_api_key,
+            "cache": False,
+        }
+        if cfg.openai_base_url:
+            lm_kwargs["api_base"] = cfg.openai_base_url
+
+        lm = dspy.LM(cfg.openai_model, **lm_kwargs)
         dspy.configure(lm=lm, temperature=0.1, max_tokens=1000)
         self._predict = dspy.Predict(_ProofToAnswer)
 

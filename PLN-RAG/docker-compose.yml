@@ -2,9 +2,11 @@ services:
   pln-rag:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-openai/gpt-4o-mini}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - PARSER=${PLNRAG_PARSER:-canonical_pln}
       - NL2PLN_MODULE_PATH=/app/data/simba_all.json
       - CANONICAL_PLN_NL2PLN_MODULE_PATH=/app/data/simba_canonical_pln.json
