@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import copy
 import importlib.util
@@ -12,10 +13,12 @@ from schemas import LogTurnPayload
 
 
 def load_sessions(base_dir: Path) -> list[dict]:
-    sessions_file = base_dir / "tests" / "sessions" / "session_short.py"
-    spec = importlib.util.spec_from_file_location("session_short", sessions_file)
+    session_file_name = os.getenv("SESSION_FILE", "session_pln_integration.py").strip()
+    sessions_file = base_dir / "tests" / "sessions" / session_file_name
+    module_name = Path(session_file_name).stem or "session_file"
+    spec = importlib.util.spec_from_file_location(module_name, sessions_file)
     if spec is None or spec.loader is None:
-        raise ValueError("Could not load session file")
+        raise ValueError(f"Could not load session file: {sessions_file}")
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -124,6 +127,9 @@ def _build_log_payload(
     complexity = float(context.get("complexity", 0.0))
     ambiguity = float(context.get("ambiguity", 0.0))
     answer = str(out.get("answer", ""))
+    integration = out.get("integration", {})
+    if not isinstance(integration, dict):
+        integration = {}
 
     homeo_mode, homeo_trigger_count, homeo_trigger_keys, homeo_suffix = (
         run_logger.extract_homeostasis(homeo_debug)
@@ -191,6 +197,8 @@ def _build_log_payload(
         "pre_update": pre_update,
         "post_update": post_update,
     }
+    if integration:
+        log_payload["integration"] = copy.deepcopy(integration)
     print_data = {
         "action": action,
         "context_memory_enabled": context_memory_enabled,

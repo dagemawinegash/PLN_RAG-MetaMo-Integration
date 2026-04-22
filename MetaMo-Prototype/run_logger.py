@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import copy
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,8 @@ class RunLogger:
         self.turns_json_path = self.logs_dir / "turns.json"
         self.turns_csv_path = self.logs_dir / "turns.csv"
         self.run_meta_path = self.logs_dir / "run_meta.json"
+        self.scraped_debug_dir = self.logs_dir / "scraped_debug"
+        self.scraped_debug_dir.mkdir(parents=True, exist_ok=True)
 
         with self.run_meta_path.open("w", encoding="utf-8") as meta_file:
             json.dump(
@@ -154,6 +157,9 @@ class RunLogger:
         decision = payload.get("decision", {})
         pre_update = payload.get("pre_update", {})
         post_update = payload.get("post_update", {})
+        integration = payload.get("integration", {})
+        if not isinstance(integration, dict):
+            integration = {}
 
         turn_record = {
             "run_id": self.run_id,
@@ -176,9 +182,17 @@ class RunLogger:
             },
             "answer": answer,
         }
+        if integration:
+            turn_record["integration"] = copy.deepcopy(integration)
         self._turn_records.append(turn_record)
         with self._turns_json_path.open("w", encoding="utf-8") as turns_file:
             json.dump(self._turn_records, turns_file, ensure_ascii=True, indent=2)
+
+        self._write_scraped_debug_file(
+            session_name=session_name,
+            turn=turn,
+            integration=integration,
+        )
 
         self._csv_writer.writerow(
             {
@@ -216,3 +230,32 @@ class RunLogger:
             }
         )
         self._csv_file.flush()
+
+    def _write_scraped_debug_file(
+        self,
+        *,
+        session_name: str,
+        turn: int,
+        integration: dict[str, Any],
+    ) -> None:
+        search_meta = integration.get("search", {})
+        if not isinstance(search_meta, dict):
+            return
+
+        documents = search_meta.get("documents", [])
+        if not isinstance(documents, list) or not documents:
+            return
+
+        safe_session = re.sub(r"[^a-zA-Z0-9_-]+", "_", session_name).strip("_").lower()
+        filename = f"{safe_session}_turn_{turn:02d}.json"
+        target_path = self.scraped_debug_dir / filename
+
+        payload = {
+            "session": session_name,
+            "turn": turn,
+            "query": str(search_meta.get("query", "")),
+            "result_count": int(search_meta.get("result_count", 0)),
+            "documents": documents,
+        }
+        with target_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=True, indent=2)

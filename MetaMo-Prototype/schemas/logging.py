@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 class LogTurnPayload(TypedDict):
@@ -37,3 +37,4 @@ class LogTurnPayload(TypedDict):
     decision: dict[str, Any]
     pre_update: dict[str, Any]
     post_update: dict[str, Any]
+    integration: NotRequired[dict[str, Any]]
