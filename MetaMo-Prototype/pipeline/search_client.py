@@ -12,6 +12,7 @@ DEFAULT_SEARCH_ENGINE = "google"
 DEFAULT_RESULTS_LIMIT = 2
 DEFAULT_TIMEOUT_SECONDS = 25
 DEFAULT_SCRAPE_TIMEOUT_SECONDS = 12
+DEFAULT_SCRAPE_MAX_CHARS = 3000
 
 
 def _scrape_url_text(url: str) -> str | None:
@@ -21,6 +22,7 @@ def _scrape_url_text(url: str) -> str | None:
     timeout_seconds = int(
         os.getenv("SCRAPER_TIMEOUT_SECONDS", str(DEFAULT_SCRAPE_TIMEOUT_SECONDS))
     )
+    max_chars = int(os.getenv("SCRAPER_MAX_CHARS", str(DEFAULT_SCRAPE_MAX_CHARS)))
     try:
         response = requests.get(
             url,
@@ -42,7 +44,7 @@ def _scrape_url_text(url: str) -> str | None:
         text = soup.get_text(separator=" ", strip=True)
         if not text:
             return None
-        return text
+        return text[:max_chars]
     except Exception:
         return None
 
