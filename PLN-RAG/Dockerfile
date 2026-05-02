@@ -2,18 +2,28 @@
 FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV SWIPL_VERSION=V9.2.9
 
-RUN apt-get update && apt-get install -y \
-    build-essential cmake ninja-build git \
-    libssl-dev libgmp-dev libarchive-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build pkg-config git ca-certificates \
+    python3 python3-pip python3-dev libpython3-dev \
+    zlib1g-dev libssl-dev libgmp-dev libarchive-dev \
     libpcre2-dev libedit-dev libossp-uuid-dev \
-    python3 python3-pip python3-dev \
+    libyaml-dev libutf8proc-dev ncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository ppa:swi-prolog/stable && \
-    apt-get update && apt-get install -y swi-prolog && \
-    rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${SWIPL_VERSION} --recurse-submodules \
+    https://github.com/SWI-Prolog/swipl-devel.git /tmp/swipl-devel && \
+    cmake -S /tmp/swipl-devel -B /tmp/swipl-devel/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -G Ninja && \
+    cmake --build /tmp/swipl-devel/build --parallel "$(nproc)" && \
+    cmake --install /tmp/swipl-devel/build && \
+    ldconfig && \
+    swipl --version && \
+    swipl --dump-runtime-variables | grep PLVERSION && \
+    python3 -c 'import re, subprocess; out=subprocess.check_output(["swipl","--dump-runtime-variables"], text=True); v=int(re.search(r"PLVERSION=\"([0-9]+)\";", out).group(1)); assert v >= 90112, v'
 
 RUN git clone https://github.com/SWI-Prolog/packages-swipy /tmp/packages-swipy && \
     cd /tmp/packages-swipy && \
@@ -28,18 +38,27 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PETTA_COMMIT=e1490899cefc67c128d5311ff4861f9997674957
 ENV PETTACHAINER_COMMIT=d21b93b5132a7fc8722f64d57b74fb7c3a8d1faa
 
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    python3 python3-pip \
-    libgmp10 libarchive13 libpcre2-8-0 libedit2 \
-    git \
-    && add-apt-repository ppa:swi-prolog/stable \
-    && apt-get update && apt-get install -y swi-prolog \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential git ca-certificates \
+    python3 python3-pip python3-dev libpython3-dev \
+    zlib1g libssl3 libgmp10 libarchive13 \
+    libpcre2-8-0 libedit2 libossp-uuid16 \
+    libyaml-0-2 libutf8proc2 libncurses6 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local /usr/local
+
+RUN ldconfig && \
+    swipl --version && \
+    swipl --dump-runtime-variables | grep PLVERSION && \
+    python3 -c 'import re, subprocess; out=subprocess.check_output(["swipl","--dump-runtime-variables"], text=True); v=int(re.search(r"PLVERSION=\"([0-9]+)\";", out).group(1)); assert v >= 90112, v'
 
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
-COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+RUN python3 - <<'PY'
+import janus_swi as janus
+print(janus.query_once("true"))
+PY
 
 # Clone PeTTa and PeTTaChainer
 WORKDIR /deps
