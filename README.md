@@ -3,6 +3,7 @@
 This repository combines:
 - `MetaMo-Prototype`: motivation-driven routing and response pipeline
 - `PLN-RAG`: ingestion, retrieval, and PLN reasoning service
+- `Qwestor-frontend`: Vite/React frontend for chat and PLN tools
 
 The main integration path is:
 - MetaMo `/chat` receives user query
@@ -14,6 +15,7 @@ The main integration path is:
 
 - `MetaMo-Prototype/`: API, routing engine, runner/eval scripts, logs
 - `PLN-RAG/`: PLN service (FastAPI), Qdrant integration, ingest/query endpoints
+- `Qwestor-frontend/`: React frontend for chat, ingest, query, reset, and health flows
 
 ## Prerequisites
 
@@ -45,6 +47,32 @@ This compose starts:
 - `pln-rag`
 - `metamo` (API mode)
 
+## Run the Frontend
+
+From:
+`PLN_RAG MetaMo Integration/Qwestor-frontend`
+
+1. Install dependencies
+```bash
+pnpm install
+```
+
+2. Configure frontend environment
+```bash
+cp .env.example .env
+```
+
+3. Start the dev server
+```bash
+pnpm dev
+```
+
+The frontend uses:
+- `VITE_METAMO_BASE_URL=http://localhost:8010`
+- `VITE_PLNRAG_BASE_URL=http://localhost:8001`
+
+It also supports Vite proxy fallbacks for `/metamo` and `/plnrag`.
+
 ## Service Endpoints
 
 MetaMo API (for frontend):
@@ -58,6 +86,9 @@ PLN-RAG (internal + optional direct debug):
 
 Qdrant:
 - `http://localhost:6333/dashboard`
+
+Frontend:
+- Vite dev server URL shown by `pnpm dev`
 
 ## Chat API Contract (Frontend)
 
