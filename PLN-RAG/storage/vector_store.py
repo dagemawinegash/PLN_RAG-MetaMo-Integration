@@ -1,6 +1,7 @@
 import json
 import uuid
 import httpx
+import hashlib
 from typing import List, Tuple
 from config import get_settings
 
@@ -22,13 +23,28 @@ class VectorStore:
         self._client = httpx.Client(timeout=30)
         self._vector_size: int | None = None
 
+    def _fallback_embed(self, text: str, size: int = 256) -> List[float]:
+        vector = [0.0] * size
+        for token in text.lower().split():
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % size
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[index] += sign
+        norm = sum(value * value for value in vector) ** 0.5
+        if norm == 0:
+            return vector
+        return [value / norm for value in vector]
+
     def embed(self, text: str) -> List[float]:
-        resp = self._client.post(self._ollama, json={
-            "model": self._ollama_model,
-            "prompt": text
-        })
-        resp.raise_for_status()
-        return resp.json()["embedding"]
+        try:
+            resp = self._client.post(self._ollama, json={
+                "model": self._ollama_model,
+                "prompt": text
+            })
+            resp.raise_for_status()
+            return resp.json()["embedding"]
+        except httpx.HTTPError:
+            return self._fallback_embed(text)
 
     def _ensure_collection(self, vector_size: int):
         if self._vector_size == vector_size:
