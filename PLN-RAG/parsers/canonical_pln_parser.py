@@ -3,8 +3,9 @@ from typing import List
 
 import dspy
 
-from config import get_settings
+from config import dspy_lm_kwargs, get_settings
 from core.parser import ParseResult, SemanticParser
+from core.symbol_normalization import canonical_symbol, normalize_text, pluralize, singularize
 
 
 class CanonicalPLNParser(SemanticParser):
@@ -38,6 +39,14 @@ class CanonicalPLNParser(SemanticParser):
         "is_a": "IsA",
         "kind_of": "IsA",
         "type_of": "IsA",
+        "located_at": "AtLocation",
+        "locatedat": "AtLocation",
+        "used_for": "UsedFor",
+        "usedfor": "UsedFor",
+        "capable_of": "CapableOf",
+        "capableof": "CapableOf",
+        "part_of": "PartOf",
+        "partof": "PartOf",
     }
     _QUERY_MARKERS = {"who", "what", "when", "where", "why", "how", "which"}
 
@@ -51,18 +60,14 @@ class CanonicalPLNParser(SemanticParser):
         self._module.load(cfg.canonical_pln_nl2pln_module_path)
         self._nl2pln = self._module.nl2pln
 
-        lm_kwargs = {
-            "api_key": cfg.openai_api_key,
-            "cache": False,
-        }
-        if cfg.openai_base_url:
-            lm_kwargs["api_base"] = cfg.openai_base_url
-
-        lm = dspy.LM(cfg.openai_model, **lm_kwargs)
+        lm = dspy.LM(cfg.openai_model, **dspy_lm_kwargs(cfg))
         dspy.configure(lm=lm, temperature=0.1, max_tokens=4000)
 
     def parse(self, text: str, context: List[str]) -> ParseResult:
         return self._parse_with_mode(text, context, is_query=False)
+
+    def parse_batch(self, texts: List[str], context: List[str]) -> ParseResult:
+        return self._parse_many_with_mode(texts, context, is_query=False)
 
     def parse_query(self, text: str, context: List[str]) -> ParseResult:
         return self._parse_with_mode(text, context, is_query=True)
@@ -70,15 +75,31 @@ class CanonicalPLNParser(SemanticParser):
     def _parse_with_mode(
         self, text: str, context: List[str], is_query: bool
     ) -> ParseResult:
+        return self._parse_many_with_mode([text], context, is_query=is_query)
+
+    def _parse_many_with_mode(
+        self, texts: List[str], context: List[str], is_query: bool
+    ) -> ParseResult:
         try:
-            concepts = self._extract_concepts(self._normalize_text(text))
-            protected_constants = self._extract_protected_constants(text)
-            proper_name_map = self._extract_proper_name_map(text)
-            prepared_text, prepared_context = self._build_parser_inputs(
-                text, context, is_query=is_query
+            texts = [text.strip() for text in texts if text and text.strip()]
+            if not texts:
+                return ParseResult()
+
+            concepts: List[str] = []
+            protected_constants: set[str] = set()
+            proper_name_map: dict[str, str] = {}
+            for text in texts:
+                for concept in self._extract_concepts(self._normalize_text(text)):
+                    if concept not in concepts:
+                        concepts.append(concept)
+                protected_constants.update(self._extract_protected_constants(text))
+                proper_name_map.update(self._extract_proper_name_map(text))
+
+            prepared_texts, prepared_context = self._build_parser_inputs_batch(
+                texts, context, is_query=is_query, concepts=concepts
             )
             result = self._nl2pln(
-                sentences=[prepared_text],
+                sentences=prepared_texts,
                 context=prepared_context,
                 pln_spec=self._pln_spec,
             )
@@ -86,22 +107,34 @@ class CanonicalPLNParser(SemanticParser):
             statements = self._canonicalize_outputs(
                 self._dedupe_preserve_order(result.statements or []),
                 concepts,
+                context,
                 protected_constants,
                 proper_name_map,
             )
             queries = self._canonicalize_outputs(
                 self._dedupe_preserve_order(result.queries or []),
                 concepts,
+                context,
                 protected_constants,
                 proper_name_map,
             )
             statements = [self._prune_generic_sortal_premises(stmt) for stmt in statements]
             statements = self._filter_statements(statements)
-            queries = self._plan_queries(question=text, queries=queries, statements=statements, context=context)
 
-            if is_query and not queries:
+            if not is_query:
+                # If NL2PLN emits only rules, materialize obvious grounded premises
+                # as facts when their variable names match words in the sentence.
+                # This keeps reasoning from failing due to missing witnesses.
+                statements = self._dedupe_preserve_order(
+                    statements + self._materialize_grounded_premise_facts(texts, statements)
+                )
+
+            question_text = " ".join(texts)
+            queries = self._plan_queries(question=question_text, queries=queries, statements=statements, context=context)
+
+            if is_query and len(texts) == 1 and not queries:
                 fallback_result = self._nl2pln(
-                    sentences=[text.strip()],
+                    sentences=[texts[0]],
                     context=prepared_context,
                     pln_spec=self._pln_spec,
                 )
@@ -110,30 +143,30 @@ class CanonicalPLNParser(SemanticParser):
                         fallback_result.statements or statements
                     ),
                     concepts,
+                    context,
                     protected_constants,
                     proper_name_map,
                 )
                 queries = self._canonicalize_outputs(
                     self._dedupe_preserve_order(fallback_result.queries or queries),
                     concepts,
+                    context,
                     protected_constants,
                     proper_name_map,
                 )
                 statements = [self._prune_generic_sortal_premises(stmt) for stmt in statements]
                 statements = self._filter_statements(statements)
-                queries = self._plan_queries(question=text, queries=queries, statements=statements, context=context)
+                queries = self._plan_queries(question=texts[0], queries=queries, statements=statements, context=context)
 
             return ParseResult(statements=statements, queries=queries)
         except Exception as e:
-            print(f"[CanonicalPLNParser] Failed for '{text}': {e}")
+            preview = texts[0] if texts else ""
+            print(f"[CanonicalPLNParser] Failed for '{preview}': {e}")
             return ParseResult()
 
-    def _build_parser_inputs(
-        self, text: str, context: List[str], is_query: bool
-    ) -> tuple[str, List[str]]:
-        original = " ".join(text.strip().split())
-        normalized = self._normalize_text(original)
-        concepts = self._extract_concepts(normalized)
+    def _build_parser_inputs_batch(
+        self, texts: List[str], context: List[str], is_query: bool, concepts: List[str]
+    ) -> tuple[List[str], List[str]]:
         predicates = self._extract_context_predicates(context)
 
         hint_lines: List[str] = [
@@ -142,30 +175,42 @@ class CanonicalPLNParser(SemanticParser):
             "; normalize entity and class symbols to lowercase snake_case",
             "; lemmatize common nouns and verbs so plural and singular forms reuse one symbol",
             "; reuse existing predicate heads from context when possible",
+            "; keep symbols consistent across all sentences in this batch",
         ]
         if concepts:
-            hint_lines.append(f"; canonical common concepts: {', '.join(concepts[:8])}")
+            hint_lines.append(f"; canonical common concepts: {', '.join(concepts[:12])}")
         if predicates:
             hint_lines.append(
                 f"; preferred predicate heads: {', '.join(predicates[:8])}"
             )
-        if is_query:
+        if is_query and texts:
+            original = " ".join(" ".join(text.strip().split()) for text in texts)
+            normalized = self._normalize_text(original)
             hint_lines.append(
                 "; query mode: ask only for forms that your own facts or rules can directly derive"
             )
             hint_lines.extend(self._build_query_hints(original, normalized, predicates))
-        else:
+        elif not is_query:
             hint_lines.append(
                 "; statement mode: prefer rules whose conclusions match the eventual query predicate shape"
             )
 
+        prepared_texts = [" ".join(text.strip().split()) for text in texts]
         enriched_context = self._dedupe_preserve_order(context + hint_lines)
-        return original, enriched_context
+        return prepared_texts, enriched_context
+
+    def _build_parser_inputs(
+        self, text: str, context: List[str], is_query: bool
+    ) -> tuple[str, List[str]]:
+        normalized = self._normalize_text(text)
+        concepts = self._extract_concepts(normalized)
+        prepared_texts, prepared_context = self._build_parser_inputs_batch(
+            [text], context, is_query=is_query, concepts=concepts
+        )
+        return prepared_texts[0], prepared_context
 
     def _normalize_text(self, text: str) -> str:
-        text = text.lower().replace("-", " ")
-        text = re.sub(r"[^a-z0-9\s]", " ", text)
-        return " ".join(text.split())
+        return normalize_text(text)
 
     def _extract_concepts(self, normalized_text: str, max_items: int = 12) -> List[str]:
         concepts: List[str] = []
@@ -180,22 +225,10 @@ class CanonicalPLNParser(SemanticParser):
         return concepts
 
     def _singularize(self, word: str) -> str:
-        if len(word) <= 3:
-            return word
-        if word.endswith("ies") and len(word) > 4:
-            return word[:-3] + "y"
-        if word.endswith("ses") and len(word) > 4:
-            return word[:-2]
-        if word.endswith("s") and not word.endswith(("ss", "us", "is")):
-            return word[:-1]
-        return word
+        return singularize(word)
 
     def _pluralize(self, word: str) -> str:
-        if word.endswith("y") and len(word) > 2:
-            return word[:-1] + "ies"
-        if word.endswith(("s", "x", "z", "ch", "sh")):
-            return word + "es"
-        return word + "s"
+        return pluralize(word)
 
     def _extract_context_predicates(
         self, context: List[str], max_items: int = 12
@@ -214,6 +247,7 @@ class CanonicalPLNParser(SemanticParser):
         self,
         items: List[str],
         concepts: List[str],
+        context: List[str],
         protected_constants: set[str],
         proper_name_map: dict[str, str],
     ) -> List[str]:
@@ -224,6 +258,7 @@ class CanonicalPLNParser(SemanticParser):
         for concept in concepts:
             concept_map[concept] = concept
             concept_map[self._pluralize(concept)] = concept
+        concept_map.update(self._extract_context_symbol_map(context))
 
         canonical_items = [
             self._canonicalize_atom(item, concept_map, protected_constants, proper_name_map)
@@ -231,6 +266,68 @@ class CanonicalPLNParser(SemanticParser):
         ]
         canonical_items = [self._normalize_isa_classes(item) for item in canonical_items]
         return self._dedupe_preserve_order(canonical_items)
+
+    def _materialize_grounded_premise_facts(
+        self, texts: List[str], statements: List[str]
+    ) -> List[str]:
+        normalized = self._normalize_text(" ".join(texts))
+        # Avoid asserting conditional premises for definitional/indicator rules.
+        # Example: "X indicates Y" should stay a rule, not assert X.
+        if any(phrase in normalized for phrase in (" indicate ", " indicates ", " implies ", " suggest ", " suggests ", " if ", " when ")):
+            return []
+        tokens = set(normalized.split())
+        facts: List[str] = []
+
+        # Pull premise atoms out of implication statements.
+        for stmt in statements:
+            m = re.search(r"\(Implication\s+\(Premises\s+(.+?)\)\s+\(Conclusions\s+.+?\)\)", stmt)
+            if not m:
+                continue
+            premises_blob = m.group(1)
+            for atom in re.findall(r"\(([A-Za-z][A-Za-z0-9_]*)\s+([^()]+?)\)", premises_blob):
+                head, arg_blob = atom
+                args = [a.strip() for a in arg_blob.split() if a.strip()]
+                if not args:
+                    continue
+
+                bound: List[str] = []
+                ok = True
+                for a in args:
+                    if a.startswith(("$", "?")):
+                        name = self._canonical_symbol(a[1:])
+                        if name in tokens:
+                            bound.append(name)
+                        else:
+                            ok = False
+                            break
+                    else:
+                        # Already grounded.
+                        bound.append(self._canonical_symbol(a))
+
+                if not ok:
+                    continue
+
+                fact_atom = f"({head} {' '.join(bound)})"
+                fact_name = f"materialized_{self._canonical_symbol(head)}_fact"
+                facts.append(f"(: {fact_name} {fact_atom} (STV 1.0 1.0))")
+
+        return self._dedupe_preserve_order(facts)
+
+    def _extract_context_symbol_map(self, context: List[str]) -> dict[str, str]:
+        symbol_map: dict[str, str] = {}
+        facts, conclusions = self._collect_available_signatures([], context)
+        for signature in facts + conclusions:
+            for arg in signature["args"]:
+                if arg.startswith(("$", "?")):
+                    continue
+                symbol_map.setdefault(arg, arg)
+                singular = self._canonical_symbol(arg, lemmatize=True)
+                plural = self._pluralize(singular) if singular else ""
+                if singular:
+                    symbol_map.setdefault(singular, arg)
+                if plural:
+                    symbol_map.setdefault(plural, arg)
+        return symbol_map
 
     def _canonicalize_atom(
         self,
@@ -307,19 +404,7 @@ class CanonicalPLNParser(SemanticParser):
     def _canonical_symbol(
         self, token: str, lemmatize: bool = True, protect: bool = False
     ) -> str:
-        token = token.strip()
-        if not token:
-            return token
-        token = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", token)
-        token = token.replace("-", "_")
-        token = re.sub(r"[^A-Za-z0-9_]", "_", token)
-        token = re.sub(r"_+", "_", token).strip("_")
-        token = token.lower()
-        if lemmatize and token and not protect:
-            token = "_".join(
-                self._singularize(part) for part in token.split("_") if part
-            )
-        return token
+        return canonical_symbol(token, lemmatize=lemmatize, protect=protect)
 
     def _extract_protected_constants(self, text: str) -> set[str]:
         protected: set[str] = set()
@@ -429,17 +514,54 @@ class CanonicalPLNParser(SemanticParser):
                 fallback = self._build_grounded_yes_no_fallbacks(
                     question, queries, facts, conclusions
                 )
-                return self._dedupe_preserve_order(queries + fallback)
+                heuristic = self._build_heuristic_question_queries(question)
+                return self._dedupe_preserve_order(queries + fallback + heuristic)
             return queries[:1]
 
         planned.sort(key=lambda item: item[0], reverse=True)
         ordered = [query for _, query in planned]
+        ordered.extend(
+            self._build_question_aligned_fallbacks(
+                question, ordered or queries, facts, conclusions
+            )
+        )
         if is_yes_no:
             fallback = self._build_grounded_yes_no_fallbacks(
                 question, queries, facts, conclusions
             )
             ordered.extend(fallback)
+            ordered.extend(self._build_heuristic_question_queries(question))
         return self._dedupe_preserve_order(ordered)
+
+    def _build_heuristic_question_queries(self, question: str) -> List[str]:
+        normalized = self._normalize_text(question).strip("?. ")
+        patterns = [
+            (r"^(?:does|do|did|has|have|had)\s+(.+?)\s+have\s+(.+)$", "HasA"),
+            (r"^(?:is|are|was|were)\s+(.+?)\s+used for\s+(.+)$", "UsedFor"),
+            (r"^(?:is|are|was|were|can|could)\s+(.+?)\s+capable of\s+(.+)$", "CapableOf"),
+            (r"^(?:is|are|was|were)\s+(.+?)\s+part of\s+(.+)$", "PartOf"),
+            (r"^(?:is|are|was|were)\s+(.+?)\s+located (?:at|in|on)\s+(.+)$", "AtLocation"),
+        ]
+
+        queries: List[str] = []
+        for pattern, head in patterns:
+            match = re.match(pattern, normalized)
+            if not match:
+                continue
+            subject = self._canonical_phrase(match.group(1))
+            target = self._canonical_phrase(match.group(2))
+            if subject and target:
+                queries.append(f"(: $prf ({head} {subject} {target}) $tv)")
+        return queries
+
+    def _canonical_phrase(self, phrase: str) -> str:
+        tokens = [
+            token
+            for token in self._normalize_text(phrase).split()
+            if token not in {"a", "an", "the"}
+        ]
+        normalized = [self._canonical_symbol(token) for token in tokens if token]
+        return "_".join(token for token in normalized if token)
 
     def _build_grounded_yes_no_fallbacks(
         self,
@@ -483,6 +605,77 @@ class CanonicalPLNParser(SemanticParser):
 
         grounded.sort(key=lambda item: item[0], reverse=True)
         return self._dedupe_preserve_order([query for _, query in grounded])
+
+    def _build_question_aligned_fallbacks(
+        self,
+        question: str,
+        queries: List[str],
+        facts: list[dict],
+        conclusions: list[dict],
+    ) -> List[str]:
+        normalized = self._normalize_text(question)
+        preferred_heads = self._preferred_heads_from_question(normalized)
+        if not preferred_heads:
+            return []
+
+        aligned: List[tuple[int, str]] = []
+        candidates = facts + conclusions
+        for query_text in queries:
+            parsed = self._parse_query_signature(query_text)
+            if not parsed or parsed["variables"]:
+                continue
+            for signature in candidates:
+                if signature["arity"] != parsed["arity"]:
+                    continue
+                if signature["head"] not in preferred_heads:
+                    continue
+                score = self._score_signature_alignment(parsed, signature, normalized)
+                if score <= 0:
+                    continue
+                aligned.append((score, self._signature_to_query(signature)))
+
+        aligned.sort(key=lambda item: item[0], reverse=True)
+        return self._dedupe_preserve_order([query for _, query in aligned])
+
+    def _preferred_heads_from_question(self, normalized_question: str) -> List[str]:
+        heads: List[str] = []
+        if any(
+            phrase in normalized_question
+            for phrase in {"located at", "located in", " in the ", " in a ", " in an "}
+        ):
+            heads.append("AtLocation")
+        if "used for" in normalized_question:
+            heads.append("UsedFor")
+        if "capable of" in normalized_question:
+            heads.append("CapableOf")
+        if "part of" in normalized_question:
+            heads.append("PartOf")
+        return heads
+
+    def _score_signature_alignment(
+        self, query: dict, signature: dict, normalized_question: str
+    ) -> int:
+        score = 0
+        question_tokens = set(normalized_question.split())
+        for q_arg, s_arg in zip(query["args"], signature["args"]):
+            if q_arg == s_arg:
+                score += 4
+                continue
+            if self._canonical_symbol(q_arg) == self._canonical_symbol(s_arg):
+                score += 3
+                continue
+            q_parts = set(q_arg.split("_"))
+            s_parts = set(s_arg.split("_"))
+            if q_parts and q_parts.issubset(s_parts):
+                score += 2
+                continue
+            if s_parts.intersection(question_tokens):
+                score += 1
+                continue
+            return -1
+        if signature["head"] != query["head"]:
+            score += 3
+        return score
 
     def _collect_available_signatures(
         self, statements: List[str], context: List[str]

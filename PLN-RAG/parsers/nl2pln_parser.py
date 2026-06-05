@@ -1,7 +1,7 @@
 from typing import List
 import dspy
 from core.parser import SemanticParser, ParseResult
-from config import get_settings
+from config import dspy_lm_kwargs, get_settings
 
 
 class NL2PLNParser(SemanticParser):
@@ -22,14 +22,7 @@ class NL2PLNParser(SemanticParser):
         self._module.load(cfg.nl2pln_module_path)
         self._nl2pln = self._module.nl2pln
 
-        lm_kwargs = {
-            "api_key": cfg.openai_api_key,
-            "cache": False,
-        }
-        if cfg.openai_base_url:
-            lm_kwargs["api_base"] = cfg.openai_base_url
-
-        lm = dspy.LM(cfg.openai_model, **lm_kwargs)
+        lm = dspy.LM(cfg.openai_model, **dspy_lm_kwargs(cfg))
         dspy.configure(lm=lm, temperature=0.1, max_tokens=4000)
 
     def parse(self, text: str, context: List[str]) -> ParseResult:
@@ -45,4 +38,23 @@ class NL2PLNParser(SemanticParser):
             )
         except Exception as e:
             print(f"[NL2PLNParser] Failed for '{text}': {e}")
+            return ParseResult()
+
+    def parse_batch(self, texts: List[str], context: List[str]) -> ParseResult:
+        try:
+            sentences = [text.strip() for text in texts if text and text.strip()]
+            if not sentences:
+                return ParseResult()
+            result = self._nl2pln(
+                sentences=sentences,
+                context=context,
+                pln_spec=self._pln_spec,
+            )
+            return ParseResult(
+                statements=result.statements or [],
+                queries=result.queries or [],
+            )
+        except Exception as e:
+            preview = texts[0] if texts else ""
+            print(f"[NL2PLNParser] Failed for batch '{preview}': {e}")
             return ParseResult()

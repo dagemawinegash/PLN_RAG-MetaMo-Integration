@@ -1,4 +1,7 @@
+import os
+import sys
 from typing import List
+from config import get_settings
 from core.parser import SemanticParser, ParseResult
 
 
@@ -12,18 +15,44 @@ class ManhinParser(SemanticParser):
     """
 
     def __init__(self):
+        cfg = get_settings()
+        self._openai_model = self._normalize_model_name(cfg.openai_model)
         # Lazy import — only loaded if this parser is selected
+        self._ensure_module_path()
         from pipelines import nl2pln as manhin_nl2pln
         from vector_index import faiss_store
         self._nl2pln = manhin_nl2pln
         self._faiss_store = faiss_store
+
+    def _ensure_module_path(self):
+        candidates = []
+        configured = os.getenv("MANHIN_PARSER_PATH", "").strip()
+        if configured:
+            candidates.append(configured)
+        candidates.extend([
+            "/deps/manhin-parser",
+            "/app/local-deps/manhin-parser",
+        ])
+        for path in candidates:
+            if path and os.path.isdir(path) and path not in sys.path:
+                sys.path.insert(0, path)
+
+    def _normalize_model_name(self, model: str) -> str:
+        if model.startswith("openai/"):
+            return model.split("/", 1)[1]
+        return model
 
     def parse(self, text: str, context: List[str]) -> ParseResult:
         try:
             # Build context dict in Manhin's expected format
             context_entries = [{"title": "Existing KB atoms", "content": "\n".join(context)}] if context else []
 
-            result = self._nl2pln(text, context=context_entries, mode="parsing")
+            result = self._nl2pln(
+                text,
+                context=context_entries,
+                mode="parsing",
+                model=self._openai_model,
+            )
             if result is None:
                 print(f"[ManhinParser] Failed for '{text}'")
                 return ParseResult()
@@ -44,7 +73,12 @@ class ManhinParser(SemanticParser):
         """For question parsing — uses Manhin's querying mode."""
         try:
             context_entries = [{"title": "Existing KB atoms", "content": "\n".join(context)}] if context else []
-            result = self._nl2pln(text, context=context_entries, mode="querying")
+            result = self._nl2pln(
+                text,
+                context=context_entries,
+                mode="querying",
+                model=self._openai_model,
+            )
             if result is None:
                 return ParseResult()
             _type_defs, stmts, queries, extra_exprs, _sent_links = result

@@ -1,6 +1,6 @@
 import dspy
 from typing import List
-from config import get_settings
+from config import dspy_lm_kwargs, get_settings
 
 
 class _ProofToAnswer(dspy.Signature):
@@ -26,14 +26,7 @@ class AnswerGenerator:
 
     def __init__(self):
         cfg = get_settings()
-        lm_kwargs = {
-            "api_key": cfg.openai_api_key,
-            "cache": False,
-        }
-        if cfg.openai_base_url:
-            lm_kwargs["api_base"] = cfg.openai_base_url
-
-        lm = dspy.LM(cfg.openai_model, **lm_kwargs)
+        lm = dspy.LM(cfg.openai_model, **dspy_lm_kwargs(cfg))
         dspy.configure(lm=lm, temperature=0.1, max_tokens=1000)
         self._predict = dspy.Predict(_ProofToAnswer)
 
